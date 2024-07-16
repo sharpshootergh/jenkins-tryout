@@ -1,12 +1,15 @@
 # jenkins-tryout
 **Pipeline Overview**
+
 This Jenkins pipeline is designed for a Maven project using GitLab as the repository management tool. It includes various stages such as checkout, versioning, building, testing, packaging, E2E testing, and publishing. The pipeline also handles different branches including main, feature/*, and release/*.
 
 **Pipeline Configuration**
+
 Agent
 The pipeline runs on any available agent.
 
 **Options**
+
 timestamps(): Adds timestamps to the console output.
 timeout(time:15, unit:'MINUTES'): Sets a timeout of 15 minutes for the pipeline.
 gitLabConnection('gitlab'): Uses a GitLab connection named 'gitlab'.
@@ -49,9 +52,11 @@ Sets up and runs the simulation using Java.
 Condition: Runs on release/* and main branches.
 Purpose: Deploys the project.
 **Steps:**
+
 If on main branch, deploys the project with Maven.
 If on release/* branch, updates the version, tags the release, and pushes the tags to the repository.
 **Post Actions**
+
 Always:
 Cleans the workspace.
 Sends an email notification with the build status.
@@ -71,5 +76,6 @@ getLastVersionTag(major_minor_version)
 Retrieves the last version tag for the given major and minor version.
 
 **Example Usage**
+
 To use this pipeline, simply define it in your Jenkinsfile and ensure your GitLab and Maven configurations match the specified settings.
 
