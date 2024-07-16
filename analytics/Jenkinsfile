@@ -1,0 +1,240 @@
+pipeline{
+    agent any
+    options {
+        timestamps()
+        timeout(time:15, unit:'MINUTES')
+        gitLabConnection('gitlab')
+    }
+    triggers{
+        gitlab(triggerOnPush: true, triggerOnMergeRequest: true, branchFilterType: 'All')
+    }
+    tools{
+        maven "maven3.6.2"
+        jdk "jdk8"
+    }
+    stages{
+        stage('checkout'){
+            steps{
+                checkout scm
+            }
+
+        }
+        stage('version'){
+            when {
+                anyOf{
+                    branch "realease/*"
+                }
+            }
+            steps{
+                script{
+                def MajorMinor = getMajorMinorVersion(env.BRANCH_NAME) 
+                def patch_number = getLastVersionTag(MajorMinor)
+                def new_patch_number = getNext3NumberVersion(patch_number)
+                withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory') {
+                        sh """
+                            mvn versions:set -DnewVersion="{new_patch_number}"
+                            mvn dependency:list
+                        """
+                    }
+                }
+            }    
+        }
+         stage('bulid test'){
+            when {
+                anyOf{
+                    branch "main"
+                }
+            }
+            steps{
+                script{
+                    withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory') {
+                        sh """
+                        mvn verify  
+                        """
+                    }
+                }
+            }    
+        }
+        stage('package'){
+            when {
+                anyOf{
+                    branch "feature/*"
+                    branch "release/*"
+                }
+            }
+            steps{
+                script{
+                            withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory') {
+                                sh """
+                        
+                                    mvn package 
+                                """
+                            }
+                        }
+            }
+
+        }
+        stage('E2E'){
+            when {
+                anyOf{
+                    branch "main"
+                    branch "release/*"
+                }
+            }
+            steps{
+                 script{
+                    if(env.BRANCH_NAME == 'main'){
+                        withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory'){
+                            sh """
+                                echo "
+                                    =========       ========
+                                ===========  E2E  ==========
+                                    =========       ========  "
+                            
+                            
+                                curl -sSf -u "admin:Password@0221" \
+                                -O 'http://eliaustin.chickenkiller.com:8082/artifactory/libs-snapshot-local/com/lidar/simulator/99-SNAPSHOT/simulator-99-20221212.122734-8.jar'
+                                curl -sSf -u "admin:Password@0221" \
+                                -O 'http://eliaustin.chickenkiller.com:8082/artifactory/libs-snapshot-local/com/lidar/telemetry/99-SNAPSHOT/telemetry-99-20221212.111740-1.jar'
+                                mv tests-sanity.txt tests.txt
+                                mv ./telemetry-*.jar ./telemetry.jar
+                                mv ./simulator-*.jar ./simulator.jar
+                                cp target/*.jar app.jar
+                                java -cp app.jar:telemetry.jar:simulator.jar com.lidar.simulation.Simulator      
+                                """
+                            }
+                        }
+                    else if(env.BRANCH_NAME.contains('release/')){
+                        withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory'){
+                            sh """
+                                echo "
+                                    =========       ========
+                                ===========  E2E  ==========
+                                    =========       ========  "
+                            
+                            
+                                curl -sSf -u "admin:Password@0221" \
+                                -O 'http://eliaustin.chickenkiller.com:8082/artifactory/libs-release-local/com/lidar/simulator/99-SNAPSHOT/simulator-99-20221212.122734-8.jar'
+                                curl -sSf -u "admin:Password@0221" \
+                                -O 'http://eliaustin.chickenkiller.com:8082/artifactory/libs-release-local/com/lidar/telemetry/99-SNAPSHOT/telemetry-${MajorMinor}.jar'
+                                mv tests-sanity.txt tests.txt
+                                mv ./telemetry-*.jar ./telemetry.jar
+                                mv ./simulator-*.jar ./simulator.jar
+                                cp target/*.jar app.jar
+                                java -cp app.jar:telemetry.jar:simulator.jar com.lidar.simulation.Simulator      
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+    
+        stage('publish'){
+            when {
+                anyOf{
+                    branch "release/*"
+                    branch "main"
+                }
+            }
+            steps{
+                script{
+                    if(env.BRANCH_NAME == 'main'){
+                        script{
+                            withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory') {
+                                sh """
+
+                                    mvn -Dmaven.test.skip=true deploy
+                                """
+                            }
+                        }
+                    }
+                    else if(env.BRANCH_NAME.contains('release/')){
+                        def MajorMinor = getMajorMinorVersion(env.BRANCH_NAME) 
+                        def patch_number = getLastVersionTag(MajorMinor)
+                        def new_patch_number = getNext3NumberVersion(patch_number)
+
+                    
+                        sh """
+                            echo "testing release"
+                            mvn versions:set -DnewVersion="{new_patch_number}"
+                    
+                            git config --global user.email "jenkins@jenkins.com"
+                            git config --global user.name "jenkins"
+                            git clean -f
+                            git tag v=${new_patch_number}
+                            git push --tags
+                            """
+                            }
+                        withMaven(maven: 'maven3.6.2', jdk: 'jdk8', mavenSettingsConfig: 'maven-artifactory') {
+                        sh """
+                            mvn -Dmaven.test.skip=true deploy
+                        """
+                    }
+                }
+            }
+            
+        }
+    }
+    post {
+        always {
+            // Cleaning workspace
+            cleanWs()
+            emailext subject: '$PROJECT_NAME - Build # $BUILD_NUMBER - $BUILD_STATUS!',
+                body: '''$PROJECT_NAME - Build # $BUILD_NUMBER - $BUILD_STATUS:
+                Check console output at $BUILD_URL to view the results.''',
+                from:'jenkins',
+                to: emailextrecipients([culprits(), upstreamDevelopers(), developers()])
+        }
+        success {
+            sh """
+                echo success
+            """
+            updateGitlabCommitStatus name: 'build', state: 'success'
+        }
+        failure {
+            sh """
+                echo failure
+            """
+            updateGitlabCommitStatus name: 'build', state: 'failed'
+        }
+    }
+}  
+
+def formatTag(_3_number_version){
+    return "v=${_3_number_version}"
+}
+def getNext3NumberVersion(tag){
+    def vlist = tag.tokenize('.')
+    if (vlist.size() == 3){
+        // Split last version
+        def (major, minor, patch) = vlist
+        // Caculate new patch
+        int new_patch = patch.toInteger() + 1
+        // Format new 3 number version
+        return "${major}.${minor}.${new_patch}"
+    }else{
+        // Format initial 3 number version
+        return "${tag}.1"
+    }
+    return tag
+}
+def getMajorMinorVersion(release_branch) {
+    def (branch, major_minor_version) = release_branch.tokenize("/")
+    return major_minor_version
+}
+def getLastVersionTag(major_minor_version){
+    def tagText = sh (
+        returnStdout: true,
+        script: "git ls-remote --tags origin  | awk '{print \$2}' | grep '${major_minor_version}' | sed 's@refs/tags/@@'"
+        ).trim()
+    // split tags
+    def tags = tagText.tokenize("\n")
+    println(tags)
+    if (tags){
+        // Return last tag
+        def last_tags = tags[-1]
+        return last_tags.replace("v=", "")
+    }
+    return ""
+}    
+
